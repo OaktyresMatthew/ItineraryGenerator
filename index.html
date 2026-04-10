@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Journey CMS Editor</title>
+    <title>Journey CMS Editor - Live Sync</title>
     
     <!-- Scripts & Styles -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -11,6 +11,11 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
     
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700;800;900&display=swap" rel="stylesheet">
 
@@ -69,12 +74,17 @@
         );
 
         const App = () => {
-            const STORAGE_KEY_CURRENT = 'cms_journey_current_session';
             const STORAGE_KEY_LIBRARY = 'cms_journey_projects_library';
-
+            
+            // Firebase State
+            const [db, setDb] = useState(null);
+            const [user, setUser] = useState(null);
+            const [appId, setAppId] = useState('');
+            const [projectCode, setProjectCode] = useState('DEFAULT');
+            
             const defaultData = {
                 mainTitle: "YOUR UPCOMING JOURNEY",
-                mainDescription: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+                mainDescription: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. This content is now synced live to the cloud.",
                 logistics: [
                     {
                         id: 'log1', date: "01 JANUARY 2027", depTime: "00:00", depAir: "ABC", arrTime: "00:00", arrAir: "XYZ",
@@ -87,11 +97,7 @@
                 jotformId: "000000000000000"
             };
 
-            const [data, setData] = useState(() => {
-                const saved = localStorage.getItem(STORAGE_KEY_CURRENT);
-                return saved ? JSON.parse(saved) : defaultData;
-            });
-
+            const [data, setData] = useState(defaultData);
             const [library, setLibrary] = useState(() => {
                 const saved = localStorage.getItem(STORAGE_KEY_LIBRARY);
                 return saved ? JSON.parse(saved) : [];
@@ -100,20 +106,86 @@
             const [activeTab, setActiveTab] = useState('general');
             const [copied, setCopied] = useState(false);
             const [showClearConfirm, setShowClearConfirm] = useState(false);
-            const [isSaving, setIsSaving] = useState(false);
+            const [syncStatus, setSyncStatus] = useState('connecting'); // connecting, synced, saving, error
             const [newProjectName, setNewProjectName] = useState('');
 
-            // Auto-save current session
+            // --- FIREBASE INITIALIZATION ---
             useEffect(() => {
-                setIsSaving(true);
-                const timeout = setTimeout(() => {
-                    localStorage.setItem(STORAGE_KEY_CURRENT, JSON.stringify(data));
-                    setIsSaving(false);
-                }, 500);
-                return () => clearTimeout(timeout);
-            }, [data]);
+                const initFirebase = async () => {
+                    try {
+                        const config = JSON.parse(window.__firebase_config);
+                        if (!firebase.apps.length) {
+                            firebase.initializeApp(config);
+                        }
+                        const firestore = firebase.firestore();
+                        const auth = firebase.auth();
+                        
+                        // Authentication first
+                        const token = window.__initial_auth_token;
+                        if (token) {
+                            await auth.signInWithCustomToken(token);
+                        } else {
+                            await auth.signInAnonymously();
+                        }
 
-            // Persist library
+                        const currentAppId = window.__app_id || 'scottish-journey-editor';
+                        setAppId(currentAppId);
+                        setDb(firestore);
+                        setUser(auth.currentUser);
+                    } catch (err) {
+                        console.error("Firebase Auth Error:", err);
+                        setSyncStatus('error');
+                    }
+                };
+                initFirebase();
+            }, []);
+
+            // --- LIVE SYNC LISTENER ---
+            useEffect(() => {
+                if (!db || !user || !appId || !projectCode) return;
+
+                setSyncStatus('connecting');
+                // Path: /artifacts/{appId}/public/data/{collectionName}/{docId}
+                const docRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('projects').doc(projectCode.toUpperCase());
+
+                const unsubscribe = docRef.onSnapshot((doc) => {
+                    if (doc.exists) {
+                        setData(doc.data());
+                        setSyncStatus('synced');
+                    } else {
+                        // If document doesn't exist, we keep default or current local data
+                        setSyncStatus('synced');
+                    }
+                }, (err) => {
+                    console.error("Firestore Listen Error:", err);
+                    setSyncStatus('error');
+                });
+
+                return () => unsubscribe();
+            }, [db, user, appId, projectCode]);
+
+            // --- AUTO-SAVE TO CLOUD ---
+            const saveTimeoutRef = useRef(null);
+            const updateDataWithSync = (newData) => {
+                setData(newData);
+                if (!db || !user || !appId) return;
+
+                setSyncStatus('saving');
+                if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+
+                saveTimeoutRef.current = setTimeout(async () => {
+                    try {
+                        const docRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('projects').doc(projectCode.toUpperCase());
+                        await docRef.set(newData);
+                        setSyncStatus('synced');
+                    } catch (err) {
+                        console.error("Firestore Save Error:", err);
+                        setSyncStatus('error');
+                    }
+                }, 1000); // 1s debounce
+            };
+
+            // Persist library locally
             useEffect(() => {
                 localStorage.setItem(STORAGE_KEY_LIBRARY, JSON.stringify(library));
             }, [library]);
@@ -130,14 +202,13 @@
                 setNewProjectName('');
             };
 
-            const loadProject = (project) => {
-                if (window.confirm(`Load "${project.name}"? This will overwrite your current active session.`)) {
-                    setData(JSON.parse(JSON.stringify(project.content)));
-                    setActiveTab('general');
+            const loadProjectFromLibrary = (project) => {
+                if (window.confirm(`Overwrite live session with "${project.name}"? This will update it for everyone.`)) {
+                    updateDataWithSync(JSON.parse(JSON.stringify(project.content)));
                 }
             };
 
-            const deleteProject = (id) => {
+            const deleteProjectFromLibrary = (id) => {
                 setLibrary(library.filter(p => p.id !== id));
             };
 
@@ -171,7 +242,7 @@ ${cat.questions.map(q => `<details name="faq"><summary style="list-style:none;fo
             };
 
             const executeClearAll = () => {
-                setData({ mainTitle: "", mainDescription: "", logistics: [], itinerary: [], faqs: [], jotformId: "" });
+                updateDataWithSync({ mainTitle: "", mainDescription: "", logistics: [], itinerary: [], faqs: [], jotformId: "" });
                 setShowClearConfirm(false);
             };
 
@@ -181,11 +252,12 @@ ${cat.questions.map(q => `<details name="faq"><summary style="list-style:none;fo
                 let current = newData;
                 for (let i = 0; i < keys.length - 1; i++) current = current[keys[i]];
                 current[keys[keys.length - 1]] = value;
-                setData(newData);
+                updateDataWithSync(newData);
             };
 
             const addItem = (collection, template) => {
-                setData(prev => ({ ...prev, [collection]: [...prev[collection], { ...template, id: Date.now().toString() }] }));
+                const newList = [...data[collection], { ...template, id: Date.now().toString() }];
+                updateDataWithSync({ ...data, [collection]: newList });
             };
 
             return (
@@ -196,23 +268,36 @@ ${cat.questions.map(q => `<details name="faq"><summary style="list-style:none;fo
                         <div className="p-6 border-b sticky top-0 bg-white z-30 text-slate-800">
                             <div className="flex items-center justify-between mb-6">
                                 <div className="flex items-center gap-2">
-                                    <Icon name="settings" className="text-orange-600" />
+                                    <Icon name="cloud" className="text-orange-600" />
                                     <div>
                                         <h1 className="font-black text-lg tracking-tighter uppercase leading-none">CMS EDITOR</h1>
                                         <div className="flex items-center gap-1 mt-1">
-                                            {isSaving ? (
-                                                <div className="flex items-center gap-1"><Icon name="refresh-cw" size={10} className="animate-spin text-orange-400" /><span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Saving...</span></div>
-                                            ) : (
-                                                <div className="flex items-center gap-1"><Icon name="save" size={10} className="text-green-500" /><span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Live Session</span></div>
-                                            )}
+                                            {syncStatus === 'saving' && <div className="flex items-center gap-1 text-orange-400 animate-pulse"><Icon name="refresh-cw" size={10} className="animate-spin" /><span className="text-[8px] font-bold uppercase">Saving...</span></div>}
+                                            {syncStatus === 'synced' && <div className="flex items-center gap-1 text-green-500"><Icon name="check-circle" size={10} /><span className="text-[8px] font-bold uppercase">Live & Shared</span></div>}
+                                            {syncStatus === 'connecting' && <div className="flex items-center gap-1 text-slate-400"><Icon name="loader" size={10} className="animate-spin" /><span className="text-[8px] font-bold uppercase">Connecting...</span></div>}
+                                            {syncStatus === 'error' && <div className="flex items-center gap-1 text-red-500"><Icon name="alert-circle" size={10} /><span className="text-[8px] font-bold uppercase">Sync Error</span></div>}
                                         </div>
                                     </div>
                                 </div>
                                 <div className="flex gap-2">
                                     <button onClick={() => setShowClearConfirm(true)} className="p-2.5 rounded-full bg-slate-100 text-slate-400 hover:text-red-500 transition-all"><Icon name="eraser" size={18} /></button>
-                                    <button onClick={handleCopyCode} className={`px-5 py-2.5 rounded-full text-[10px] font-black tracking-widest transition-all ${copied ? 'bg-green-500 text-white' : 'bg-slate-900 text-white hover:bg-orange-600'}`}>{copied ? 'COPIED!' : 'GET CODE'}</button>
+                                    <button onClick={handleCopyCode} className={`px-5 py-2.5 rounded-full text-[10px] font-black tracking-widest transition-all shadow-sm ${copied ? 'bg-green-500 text-white' : 'bg-slate-900 text-white hover:bg-orange-600'}`}>{copied ? 'COPIED!' : 'GET CODE'}</button>
                                 </div>
                             </div>
+
+                            <div className="bg-orange-50 p-3 rounded-xl border border-orange-100 flex items-center gap-3 mb-6">
+                                <Icon name="globe" size={16} className="text-orange-400" />
+                                <div className="flex-1">
+                                    <p className="text-[8px] font-black uppercase text-orange-400 tracking-widest mb-1">Shared Project Code</p>
+                                    <input 
+                                        className="bg-transparent font-black text-sm text-orange-900 focus:outline-none w-full tracking-widest"
+                                        value={projectCode}
+                                        onChange={(e) => setProjectCode(e.target.value.toUpperCase().replace(/\s/g, ''))}
+                                    />
+                                </div>
+                                <div title="Share this code with others to collaborate live." className="cursor-help"><Icon name="info" size={14} className="text-orange-200" /></div>
+                            </div>
+
                             <div className="flex gap-1 bg-slate-50 p-1 rounded-xl">
                                 {[{id:'general',l:'Logistics'},{id:'itin',l:'Itinerary'},{id:'faq',l:'FAQ'},{id:'library',l:'Library'}].map(t => (
                                     <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex-1 py-2.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all tab-transition ${activeTab === t.id ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>{t.l}</button>
@@ -223,31 +308,28 @@ ${cat.questions.map(q => `<details name="faq"><summary style="list-style:none;fo
                         <div className="flex-1 overflow-y-auto p-6 scrollbar-thin text-slate-800">
                             {activeTab === 'library' && (
                                 <div className="animate-fade-in space-y-6">
-                                    <div className="bg-orange-50 p-4 rounded-xl border border-orange-100">
-                                        <h3 className="text-[10px] font-black uppercase text-orange-700 mb-3 tracking-widest">Save Current Work</h3>
-                                        <div className="flex gap-2">
+                                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                                        <h3 className="text-[10px] font-black uppercase text-slate-400 mb-3 tracking-widest">Snapshots (Local)</h3>
+                                        <div className="flex gap-2 text-slate-800">
                                             <input 
-                                                className="flex-1 p-2.5 rounded-lg border border-orange-200 text-sm focus:ring-2 focus:ring-orange-400 outline-none" 
-                                                placeholder="Version Name (e.g. Draft V1)" 
+                                                className="flex-1 p-2.5 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-orange-400 outline-none" 
+                                                placeholder="Snapshot Name..." 
                                                 value={newProjectName} 
                                                 onChange={e => setNewProjectName(e.target.value)}
                                             />
-                                            <button onClick={handleSaveToLibrary} className="bg-orange-600 text-white px-4 rounded-lg font-black text-[10px] uppercase">Save</button>
+                                            <button onClick={handleSaveToLibrary} className="bg-slate-900 text-white px-4 rounded-lg font-black text-[10px] uppercase transition-all hover:bg-orange-600">Save</button>
                                         </div>
                                     </div>
-
                                     <div className="space-y-3">
-                                        <h3 className="text-xs font-black uppercase border-l-4 border-slate-300 pl-3">Saved Versions</h3>
-                                        {library.length === 0 && <p className="text-xs text-slate-400 italic">No saved versions yet.</p>}
                                         {library.map(p => (
                                             <div key={p.id} className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm hover:border-orange-200 transition-all flex justify-between items-center group">
-                                                <div onClick={() => loadProject(p)} className="cursor-pointer flex-1">
+                                                <div onClick={() => loadProjectFromLibrary(p)} className="cursor-pointer flex-1 pr-4">
                                                     <p className="font-black text-sm text-slate-800">{p.name}</p>
                                                     <p className="text-[10px] text-slate-400 uppercase font-bold">{p.date}</p>
                                                 </div>
-                                                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
-                                                    <button onClick={() => loadProject(p)} className="p-2 bg-slate-100 text-slate-600 rounded-lg hover:bg-orange-600 hover:text-white"><Icon name="upload" size={14} /></button>
-                                                    <button onClick={() => deleteProject(p.id)} className="p-2 bg-slate-100 text-slate-600 rounded-lg hover:bg-red-600 hover:text-white"><Icon name="trash-2" size={14} /></button>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => loadProjectFromLibrary(p)} className="p-2 bg-slate-50 text-slate-400 rounded-lg hover:bg-orange-600 hover:text-white transition-all"><Icon name="upload" size={14} /></button>
+                                                    <button onClick={() => deleteProjectFromLibrary(p.id)} className="p-2 bg-slate-50 text-slate-400 rounded-lg hover:bg-red-600 hover:text-white transition-all"><Icon name="trash-2" size={14} /></button>
                                                 </div>
                                             </div>
                                         ))}
@@ -262,15 +344,14 @@ ${cat.questions.map(q => `<details name="faq"><summary style="list-style:none;fo
                                     <div className="h-px bg-slate-100 my-8"></div>
                                     <div className="flex items-center justify-between mb-4"><h3 className="text-xs font-black uppercase border-l-4 border-orange-500 pl-3 tracking-wider">Flight Blocks</h3><button onClick={() => addItem('logistics', { id: Date.now().toString(), date: "NEW DATE", depTime: "00:00", depAir: "", arrTime: "00:00", arrAir: "", notes: "", imgUrl: "https://placehold.co/180x180/EEE/666?text=TRAVEL", googleCal: "#", outlookCal: "#", appleCal: "#" })} className="text-[10px] bg-slate-900 text-white px-3 py-1.5 rounded-lg font-black hover:bg-orange-600 transition-colors">+ ADD</button></div>
                                     {data.logistics.map((log, idx) => (
-                                        <div key={log.id} className="bg-slate-50 border border-slate-200 p-4 rounded-xl mb-6 relative group border-2 border-transparent hover:border-orange-100 transition-all">
-                                            <button onClick={() => updateField('logistics', data.logistics.filter((_, i) => i !== idx))} className="absolute top-2 right-2 text-slate-300 hover:text-red-500 transition-colors"><Icon name="trash-2" size={14} /></button>
+                                        <div key={log.id} className="bg-slate-50 border border-slate-200 p-4 rounded-xl mb-6 relative group">
+                                            <button onClick={() => updateDataWithSync({...data, logistics: data.logistics.filter((_, i) => i !== idx)})} className="absolute top-2 right-2 text-slate-300 hover:text-red-500 transition-colors"><Icon name="trash-2" size={14} /></button>
                                             <Input label="Travel Date" value={log.date} onChange={(v) => updateField(`logistics.${idx}.date`, v)} />
                                             <div className="grid grid-cols-2 gap-3 mb-4">
                                                 <div className="bg-white p-2 rounded border shadow-sm"><div className="text-[8px] font-black text-orange-600 mb-1 uppercase">Departure</div><input className="w-full text-xs font-bold focus:outline-none" value={log.depTime} onChange={e => updateField(`logistics.${idx}.depTime`, e.target.value)} /><input className="w-full text-[10px] text-slate-400 focus:outline-none" value={log.depAir} onChange={e => updateField(`logistics.${idx}.depAir`, e.target.value)} placeholder="Code" /></div>
                                                 <div className="bg-white p-2 rounded border shadow-sm"><div className="text-[8px] font-black text-orange-600 mb-1 uppercase">Arrival</div><input className="w-full text-xs font-bold focus:outline-none" value={log.arrTime} onChange={e => updateField(`logistics.${idx}.arrTime`, e.target.value)} /><input className="w-full text-[10px] text-slate-400 focus:outline-none" value={log.arrAir} onChange={e => updateField(`logistics.${idx}.arrAir`, e.target.value)} placeholder="Code" /></div>
                                             </div>
                                             <Input label="Flight Summary" isArea value={log.notes} onChange={(v) => updateField(`logistics.${idx}.notes`, v)} />
-                                            <Input label="Airport Image URL" value={log.imgUrl} onChange={(v) => updateField(`logistics.${idx}.imgUrl`, v)} />
                                         </div>
                                     ))}
                                     <Input label="JotForm ID" value={data.jotformId} onChange={(v) => updateField('jotformId', v)} />
@@ -282,16 +363,16 @@ ${cat.questions.map(q => `<details name="faq"><summary style="list-style:none;fo
                                     <div className="flex items-center justify-between mb-6"><h3 className="text-xs font-black uppercase border-l-4 border-orange-500 pl-3 tracking-wider">Itinerary Schedule</h3><button onClick={() => addItem('itinerary', { title: "NEW DAY", items: [] })} className="text-[10px] bg-slate-900 text-white px-3 py-1.5 rounded-lg font-black hover:bg-orange-600 transition-colors">+ ADD DAY</button></div>
                                     {data.itinerary.map((day, dIdx) => (
                                         <div key={day.id} className="mb-8 border rounded-2xl overflow-hidden bg-white shadow-sm border-slate-200">
-                                            <div className="bg-slate-50 p-4 flex items-center justify-between border-b"><input className="bg-transparent font-black text-xs w-full focus:outline-none uppercase tracking-widest text-slate-700" value={day.title} onChange={e => updateField(`itinerary.${dIdx}.title`, e.target.value)} /><button onClick={() => updateField('itinerary', data.itinerary.filter((_, i) => i !== dIdx))} className="text-slate-300 hover:text-red-500"><Icon name="x" size={14} /></button></div>
+                                            <div className="bg-slate-50 p-4 flex items-center justify-between border-b"><input className="bg-transparent font-black text-xs w-full focus:outline-none uppercase tracking-widest text-slate-700" value={day.title} onChange={e => updateField(`itinerary.${dIdx}.title`, e.target.value)} /><button onClick={() => updateDataWithSync({...data, itinerary: data.itinerary.filter((_, i) => i !== dIdx)})} className="text-slate-300 hover:text-red-500"><Icon name="x" size={14} /></button></div>
                                             <div className="p-4 space-y-4">
                                                 {day.items.map((item, eIdx) => (
                                                     <div key={eIdx} className="flex gap-3 group border-b border-slate-50 pb-3 last:border-0 relative">
-                                                        <div className="w-16"><input className="w-full bg-slate-50 text-[10px] font-black p-1.5 rounded border border-transparent focus:border-orange-200 outline-none text-orange-600" value={item.time} onChange={e => { const n = [...data.itinerary]; n[dIdx].items[eIdx].time = e.target.value; setData({...data, itinerary: n}); }} /></div>
-                                                        <div className="flex-1 space-y-1 pr-6"><input className="w-full text-xs font-black focus:outline-none text-slate-800" value={item.title} onChange={e => { const n = [...data.itinerary]; n[dIdx].items[eIdx].title = e.target.value; setData({...data, itinerary: n}); }} /><input className="w-full text-[10px] text-slate-500 focus:outline-none italic" value={item.desc} onChange={e => { const n = [...data.itinerary]; n[dIdx].items[eIdx].desc = e.target.value; setData({...data, itinerary: n}); }} /></div>
-                                                        <button onClick={() => { const n = [...data.itinerary]; n[dIdx].items.splice(eIdx, 1); setData({...data, itinerary: n}); }} className="opacity-0 group-hover:opacity-100 text-slate-300 absolute right-0 top-1"><Icon name="trash-2" size={12} /></button>
+                                                        <div className="w-16"><input className="w-full bg-slate-50 text-[10px] font-black p-1.5 rounded border border-transparent focus:border-orange-200 outline-none text-orange-600" value={item.time} onChange={e => { const n = [...data.itinerary]; n[dIdx].items[eIdx].time = e.target.value; updateDataWithSync({...data, itinerary: n}); }} /></div>
+                                                        <div className="flex-1 space-y-1 pr-6"><input className="w-full text-xs font-black focus:outline-none text-slate-800" value={item.title} onChange={e => { const n = [...data.itinerary]; n[dIdx].items[eIdx].title = e.target.value; updateDataWithSync({...data, itinerary: n}); }} /><input className="w-full text-[10px] text-slate-500 focus:outline-none italic" value={item.desc} onChange={e => { const n = [...data.itinerary]; n[dIdx].items[eIdx].desc = e.target.value; updateDataWithSync({...data, itinerary: n}); }} /></div>
+                                                        <button onClick={() => { const n = [...data.itinerary]; n[dIdx].items.splice(eIdx, 1); updateDataWithSync({...data, itinerary: n}); }} className="opacity-0 group-hover:opacity-100 text-slate-300 absolute right-0 top-1"><Icon name="trash-2" size={12} /></button>
                                                     </div>
                                                 ))}
-                                                <button onClick={() => { const n = [...data.itinerary]; n[dIdx].items.push({time: "09:00", title: "New Activity", desc: ""}); setData({...data, itinerary: n}); }} className="w-full py-2 border-2 border-dashed border-slate-100 text-[10px] font-black text-slate-400 rounded-lg hover:border-orange-200 hover:text-orange-500">+ ADD EVENT</button>
+                                                <button onClick={() => { const n = [...data.itinerary]; n[dIdx].items.push({time: "09:00", title: "New Activity", desc: ""}); updateDataWithSync({...data, itinerary: n}); }} className="w-full py-2 border-2 border-dashed border-slate-100 text-[10px] font-black text-slate-400 rounded-lg hover:border-orange-200 hover:text-orange-500 transition-all">+ ADD EVENT</button>
                                             </div>
                                         </div>
                                     ))}
@@ -299,16 +380,16 @@ ${cat.questions.map(q => `<details name="faq"><summary style="list-style:none;fo
                             )}
 
                             {activeTab === 'faq' && (
-                                <div className="animate-fade-in">
+                                <div className="animate-fade-in text-slate-800">
                                     <div className="flex items-center justify-between mb-6"><h3 className="text-xs font-black uppercase border-l-4 border-orange-500 pl-3 tracking-wider">Help Sections</h3><button onClick={() => addItem('faqs', { category: "NEW CATEGORY", questions: [] })} className="text-[10px] bg-slate-900 text-white px-3 py-1.5 rounded-lg font-black hover:bg-orange-600">+ SECTION</button></div>
                                     {data.faqs.map((cat, cIdx) => (
                                         <div key={cat.id || cIdx} className="mb-10 p-5 border border-slate-200 rounded-2xl bg-white shadow-sm">
-                                            <div className="flex items-center gap-2 mb-6"><input className="flex-1 bg-orange-50 p-2 text-[10px] font-black uppercase tracking-[2px] text-orange-600 rounded-lg focus:outline-none" value={cat.category} onChange={e => updateField(`faqs.${cIdx}.category`, e.target.value)} /><button onClick={() => updateField('faqs', data.faqs.filter((_, i) => i !== cIdx))} className="text-slate-300 hover:text-red-500"><Icon name="trash-2" size={16} /></button></div>
-                                            <div className="space-y-6 text-slate-800">
+                                            <div className="flex items-center gap-2 mb-6"><input className="flex-1 bg-orange-50 p-2 text-[10px] font-black uppercase tracking-[2px] text-orange-600 rounded-lg focus:outline-none" value={cat.category} onChange={e => updateField(`faqs.${cIdx}.category`, e.target.value)} /><button onClick={() => updateDataWithSync({...data, faqs: data.faqs.filter((_, i) => i !== cIdx)})} className="text-slate-300 hover:text-red-500"><Icon name="trash-2" size={16} /></button></div>
+                                            <div className="space-y-6">
                                                 {cat.questions.map((q, qIdx) => (
-                                                    <div key={qIdx} className="border-b border-slate-50 pb-6 last:border-0 group relative"><input className="w-full text-xs font-bold mb-2 focus:outline-none text-slate-900 pr-12" value={q.q} onChange={e => { const n = [...data.faqs]; n[cIdx].questions[qIdx].q = e.target.value; setData({...data, faqs: n}); }} /><textarea className="w-full text-[11px] text-slate-500 focus:outline-none min-h-[60px] leading-relaxed resize-none" value={q.a} onChange={e => { const n = [...data.faqs]; n[cIdx].questions[qIdx].a = e.target.value; setData({...data, faqs: n}); }} /><button onClick={() => { const n = [...data.faqs]; n[cIdx].questions.splice(qIdx, 1); setData({...data, faqs: n}); }} className="opacity-0 group-hover:opacity-100 absolute top-0 right-0 text-[10px] text-red-300 font-bold">Delete</button></div>
+                                                    <div key={qIdx} className="border-b border-slate-50 pb-6 last:border-0 group relative"><input className="w-full text-xs font-bold mb-2 focus:outline-none text-slate-900 pr-12" value={q.q} onChange={e => { const n = [...data.faqs]; n[cIdx].questions[qIdx].q = e.target.value; updateDataWithSync({...data, faqs: n}); }} /><textarea className="w-full text-[11px] text-slate-500 focus:outline-none min-h-[60px] leading-relaxed resize-none" value={q.a} onChange={e => { const n = [...data.faqs]; n[cIdx].questions[qIdx].a = e.target.value; updateDataWithSync({...data, faqs: n}); }} /><button onClick={() => { const n = [...data.faqs]; n[cIdx].questions.splice(qIdx, 1); updateDataWithSync({...data, faqs: n}); }} className="opacity-0 group-hover:opacity-100 absolute top-0 right-0 text-[10px] text-red-300 font-bold">Delete</button></div>
                                                 ))}
-                                                <button onClick={() => { const n = [...data.faqs]; n[cIdx].questions.push({q: "Question?", a: ""}); setData({...data, faqs: n}); }} className="text-[10px] font-black text-slate-400 hover:text-orange-600 uppercase">+ ADD QUESTION</button>
+                                                <button onClick={() => { const n = [...data.faqs]; n[cIdx].questions.push({q: "Question?", a: ""}); updateDataWithSync({...data, faqs: n}); }} className="text-[10px] font-black text-slate-400 hover:text-orange-600 uppercase">+ ADD QUESTION</button>
                                             </div>
                                         </div>
                                     ))}
@@ -328,10 +409,10 @@ ${cat.questions.map(q => `<details name="faq"><summary style="list-style:none;fo
                     {/* --- CUSTOM CLEAR MODAL --- */}
                     {showClearConfirm && (
                         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-                            <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl border border-slate-100 animate-fade-in text-center">
+                            <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl border border-slate-100 animate-fade-in text-center text-slate-800">
                                 <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6"><Icon name="alert-triangle" size={32} /></div>
-                                <h2 className="text-xl font-black text-slate-900 mb-2 uppercase tracking-tighter">Wipe Current?</h2>
-                                <p className="text-slate-500 text-sm mb-8 leading-relaxed">This clears your active session only. Items in your Library will remain safe.</p>
+                                <h2 className="text-xl font-black text-slate-900 mb-2 uppercase tracking-tighter">Wipe Content?</h2>
+                                <p className="text-slate-500 text-sm mb-8 leading-relaxed">This clears the live shared session. Library snapshots remain safe.</p>
                                 <div className="flex gap-3"><button onClick={() => setShowClearConfirm(false)} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-black text-[10px] uppercase rounded-xl">Cancel</button><button onClick={executeClearAll} className="flex-1 py-3 px-4 bg-red-600 text-white font-black text-[10px] uppercase rounded-xl shadow-lg shadow-red-200">Wipe</button></div>
                             </div>
                         </div>
