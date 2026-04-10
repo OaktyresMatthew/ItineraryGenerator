@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Journey CMS Editor</title>
+    
+    <!-- Scripts & Styles -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700;800;900&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Montserrat', sans-serif; background: #f8fafc; }
+        .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
+        
+        .tab-transition { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- ICON WRAPPER FOR LUCIDE ---
+        const Icon = ({ name, size = 20, className = "" }) => {
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, [name]);
+            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+        };
+
+        const Input = ({ label, value, onChange, placeholder, isArea = false }) => (
+            <div className="mb-4">
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">{label}</label>
+                {isArea ? (
+                    <textarea
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none text-sm min-h-[100px] leading-relaxed"
+                        value={value || ''}
+                        onChange={(e) => onChange(e.target.value)}
+                        placeholder={placeholder}
+                    />
+                ) : (
+                    <input
+                        type="text"
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none text-sm"
+                        value={value || ''}
+                        onChange={(e) => onChange(e.target.value)}
+                        placeholder={placeholder}
+                    />
+                )}
+            </div>
+        );
+
+        const App = () => {
+            const STORAGE_KEY_CURRENT = 'cms_journey_current_session';
+            const STORAGE_KEY_LIBRARY = 'cms_journey_projects_library';
+
+            const defaultData = {
+                mainTitle: "YOUR UPCOMING JOURNEY",
+                mainDescription: "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+                logistics: [
+                    {
+                        id: 'log1', date: "01 JANUARY 2027", depTime: "00:00", depAir: "ABC", arrTime: "00:00", arrAir: "XYZ",
+                        notes: "Flight details confirmed soon.", imgUrl: "https://placehold.co/180x180/EEE/666?text=TRAVEL",
+                        googleCal: "#", outlookCal: "#", appleCal: "#"
+                    }
+                ],
+                itinerary: [{ id: 'day1', title: "DAY 1", items: [{ time: "09:00", title: "Arrival", desc: "Welcome" }] }],
+                faqs: [{ category: "General", questions: [{ q: "Help?", a: "Details here." }] }],
+                jotformId: "000000000000000"
+            };
+
+            const [data, setData] = useState(() => {
+                const saved = localStorage.getItem(STORAGE_KEY_CURRENT);
+                return saved ? JSON.parse(saved) : defaultData;
+            });
+
+            const [library, setLibrary] = useState(() => {
+                const saved = localStorage.getItem(STORAGE_KEY_LIBRARY);
+                return saved ? JSON.parse(saved) : [];
+            });
+
+            const [activeTab, setActiveTab] = useState('general');
+            const [copied, setCopied] = useState(false);
+            const [showClearConfirm, setShowClearConfirm] = useState(false);
+            const [isSaving, setIsSaving] = useState(false);
+            const [newProjectName, setNewProjectName] = useState('');
+
+            // Auto-save current session
+            useEffect(() => {
+                setIsSaving(true);
+                const timeout = setTimeout(() => {
+                    localStorage.setItem(STORAGE_KEY_CURRENT, JSON.stringify(data));
+                    setIsSaving(false);
+                }, 500);
+                return () => clearTimeout(timeout);
+            }, [data]);
+
+            // Persist library
+            useEffect(() => {
+                localStorage.setItem(STORAGE_KEY_LIBRARY, JSON.stringify(library));
+            }, [library]);
+
+            const handleSaveToLibrary = () => {
+                if (!newProjectName.trim()) return;
+                const newProject = {
+                    id: Date.now(),
+                    name: newProjectName,
+                    date: new Date().toLocaleString(),
+                    content: JSON.parse(JSON.stringify(data))
+                };
+                setLibrary([newProject, ...library]);
+                setNewProjectName('');
+            };
+
+            const loadProject = (project) => {
+                if (window.confirm(`Load "${project.name}"? This will overwrite your current active session.`)) {
+                    setData(JSON.parse(JSON.stringify(project.content)));
+                    setActiveTab('general');
+                }
+            };
+
+            const deleteProject = (id) => {
+                setLibrary(library.filter(p => p.id !== id));
+            };
+
+            const generateHTML = () => {
+                const logsHtml = data.logistics.map(l => `
+<details name="locs"><summary style="list-style:none;font-weight:800;text-transform:uppercase;letter-spacing:1px;">Travel Logistics</summary><div class="content-wrapper"><div class="fl-row"><div class="text-col"><p style="margin:0 0 10px 0;font-size:20px;color:#f16623;font-weight:900;">${l.date}</p><p style="margin:0 0 25px 0;font-size:15px;color:#444;line-height:1.7;"><strong>FLIGHT DETAILS:</strong> ${l.notes}<br>Departure: ${l.depTime} (${l.depAir})<br>Arrival: ${l.arrTime} (${l.arrAir})</p><div style="display:flex;gap:10px;flex-wrap:wrap;"><a href="${l.googleCal || '#'}" class="cal-btn" style="display:flex!important;align-items:center!important;justify-content:center!important;background:#f16623!important;color:#ffffff!important;text-decoration:none!important;font-weight:900!important;font-size:10px!important;width:115px!important;height:45px!important;transition:0.3s!important;border-radius:0!important;font-family:inherit!important;">GOOGLE</a><a href="${l.outlookCal || '#'}" class="cal-btn" style="display:flex!important;align-items:center!important;justify-content:center!important;background:#f16623!important;color:#ffffff!important;text-decoration:none!important;font-weight:900!important;font-size:10px!important;width:115px!important;height:45px!important;transition:0.3s!important;border-radius:0!important;font-family:inherit!important;">OUTLOOK</a><a href="${l.appleCal || '#'}" class="cal-btn" style="display:flex!important;align-items:center!important;justify-content:center!important;background:#f16623!important;color:#ffffff!important;text-decoration:none!important;font-weight:900!important;font-size:10px!important;width:115px!important;height:45px!important;transition:0.3s!important;border-radius:0!important;font-family:inherit!important;">APPLE/ICS</a></div></div><img src="${l.imgUrl}" class="air-img"></div></div></details>
+                `).join('');
+
+                const itinHtml = data.itinerary.map(day => `
+<details name="days"><summary style="list-style:none;font-weight:800;text-transform:uppercase;letter-spacing:1px;">${day.title}</summary><div class="content-wrapper"><div class="tm-line">${day.items.map(item => `<div class="tm-item"><h4 style="color:#f16623;margin:0;font-size:15px;font-weight:900;">${item.time} - ${item.title}</h4>${item.desc ? `<p style="margin:5px 0 0 0;font-size:14px;color:#444;">${item.desc}</p>` : ''}</div>`).join('')}</div></div></details>
+                `).join('');
+
+                const faqHtml = data.faqs.map(cat => `
+<span class="faq-cat-title">${cat.category}</span>
+${cat.questions.map(q => `<details name="faq"><summary style="list-style:none;font-weight:800;font-size:14px;">${q.q}</summary><div class="content-wrapper" style="font-size:14px;color:#444;line-height:1.6;">${q.a}</div></details>`).join('')}
+                `).join('');
+
+                return `
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700;800;900&display=swap" rel="stylesheet"><div style="margin:0!important;padding:0!important;display:block!important;clear:both!important;font-family:'Montserrat',sans-serif!important;background:#ffffff;padding:20px!important;border:1px solid #eeeeee;"><style>#global-flights{background:#fafafa;padding:25px;border-top:4px solid #f16623;margin-bottom:35px}#tab-sys{background:#ffffff}.t-heads{display:flex!important;justify-content:center!important;gap:12px!important;margin-bottom:35px!important;flex-wrap:nowrap!important}.t-heads br,.t-heads p{display:none!important}.t-btn{flex:1!important;min-height:65px!important;cursor:pointer!important;font-weight:900!important;font-size:12px!important;text-transform:uppercase!important;letter-spacing:1.5px!important;color:#000!important;border:1px solid #ddd!important;background:#fff!important;transition:0.3s!important;display:flex!important;align-items:center!important;justify-content:center!important;border-radius:0!important;font-family:inherit!important;padding:0 15px!important;margin:0!important;line-height:1.2!important;text-align:center!important}.t-btn.active{border-color:#f16623!important;background:#f16623!important;color:#fff!important}details summary::-webkit-details-marker{display:none}details summary{display:flex!important;justify-content:space-between!important;align-items:center!important;outline:none!important;cursor:pointer!important;padding:15px 20px!important;transition:0.2s!important;background:#fff!important;font-family:inherit!important;min-height:65px!important;line-height:1.3!important}details summary:after{content:"EXPLORE +"!important;font-size:10px!important;font-weight:900!important;letter-spacing:1px!important;color:#f16623!important;border:1.2px solid #f16623!important;padding:8px 14px!important;border-radius:0!important;white-space:nowrap!important;margin-left:15px!important;flex-shrink:0!important}details[open] summary:after{content:"COLLAPSE -"!important;background:#f16623!important;color:#fff!important}details{border-radius:0!important;border:1px solid #eeeeee!important;border-left:5px solid #dddddd!important;overflow:hidden!important;background:#ffffff!important;margin-bottom:12px!important;transition:max-height 0.5s ease-in-out!important;max-height:68px!important;display:block!important;scroll-margin-top:120px}details[open]{border-left-color:#f16623!important;border-color:#dddddd!important;max-height:4000px!important}details .content-wrapper{opacity:0;transition:opacity 0.4s ease-in-out;padding:25px;background:#ffffff;border-top:1px solid #eeeeee}details[open] .content-wrapper{opacity:1}.fl-row{display:flex!important;flex-direction:row!important;justify-content:space-between!important;align-items:center!important;gap:20px!important}.text-col{flex:1!important;min-width:0!important}.air-img{width:160px!important;height:160px!important;object-fit:cover!important;border:1px solid #eee!important;flex-shrink:0!important}.tm-line{position:relative;padding:10px 0 10px 35px;border-left:2px solid #eeeeee;margin-left:15px}.tm-item{position:relative;margin-bottom:30px}.tm-item::before{content:''!important;position:absolute!important;left:-42px!important;top:5px!important;width:12px!important;height:12px!important;background:#f16623!important;border:3px solid #ffffff!important;border-radius:50%!important}.faq-cat-title{display:block;color:#f16623;font-weight:900;font-size:11px;letter-spacing:2px;text-transform:uppercase;margin:25px 0 15px 0;border-bottom:1px solid #eee;padding-bottom:10px}.t-panel{display:none}.t-panel.active{display:block!important;animation:fadeIn 0.4s}@keyframes fadeIn{from{opacity:0}to{opacity:1}}@media(max-width:768px){.t-heads{flex-direction:column!important;gap:10px!important}.t-btn{width:100%!important;max-width:none!important}.fl-row{flex-direction:column-reverse!important;align-items:center!important;text-align:center!important}.air-img{width:100%!important;max-width:200px!important;height:auto!important;margin-top:20px!important}details:not([open]){max-height:85px!important}}</style><div id="global-flights"><h2 style="color:#000;font-size:32px;letter-spacing:-1.5px;text-transform:uppercase;margin:0 0 10px 0;font-weight:900;line-height:1;font-family:inherit;">${data.mainTitle}</h2><p style="font-size:15px;line-height:1.7;color:#444;margin-bottom:25px;font-family:inherit;">${data.mainDescription}</p>${logsHtml}</div><div id="tab-sys"><div class="t-heads"><button class="t-btn" onclick="openT(event,'r-tab')">Registration</button><button class="t-btn active" onclick="openT(event,'i-tab')">Itinerary</button><button class="t-btn" onclick="openT(event,'q-tab')">FAQ</button></div><div id="r-tab" class="t-panel"><div style="height:600px; overflow-y:auto; border:1px solid #eee; padding:10px; background:#fff;"><script type="text/javascript" src="https://form.jotform.com/jsform/${data.jotformId}"><\/script></div></div><div id="i-tab" class="t-panel active">${itinHtml}</div><div id="q-tab" class="t-panel">${faqHtml}</div></div><script>function openT(e,n){var t,l,b;l=document.getElementsByClassName("t-panel");for(t=0;t<l.length;t++)l[t].classList.remove("active");b=document.getElementsByClassName("t-btn");for(t=0;t<b.length;t++)b[t].classList.remove("active");document.getElementById(n).classList.add("active");e.currentTarget.classList.add("active")}document.addEventListener('click',function(e){var s=e.target.closest('summary');if(!s)return;var d=s.parentElement;var g=d.getAttribute('name');e.preventDefault();if(d.hasAttribute('open')){d.style.maxHeight='68px';setTimeout(function(){d.removeAttribute('open')},450)}else{if(g){document.querySelectorAll('details[name="'+g+'"][open]').forEach(function(od){od.style.maxHeight='68px';setTimeout(function(){od.removeAttribute('open')},450)})}d.setAttribute('open','');setTimeout(function(){d.style.maxHeight='4000px';d.scrollIntoView({behavior:'smooth',block:'start'})},10)}});<\/script></div>`.trim();
+            };
+
+            const handleCopyCode = () => {
+                const el = document.createElement('textarea');
+                el.value = generateHTML();
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+            };
+
+            const executeClearAll = () => {
+                setData({ mainTitle: "", mainDescription: "", logistics: [], itinerary: [], faqs: [], jotformId: "" });
+                setShowClearConfirm(false);
+            };
+
+            const updateField = (path, value) => {
+                const newData = JSON.parse(JSON.stringify(data));
+                const keys = path.split('.');
+                let current = newData;
+                for (let i = 0; i < keys.length - 1; i++) current = current[keys[i]];
+                current[keys[keys.length - 1]] = value;
+                setData(newData);
+            };
+
+            const addItem = (collection, template) => {
+                setData(prev => ({ ...prev, [collection]: [...prev[collection], { ...template, id: Date.now().toString() }] }));
+            };
+
+            return (
+                <div className="flex flex-col md:flex-row h-screen overflow-hidden relative">
+                    
+                    {/* --- SIDEBAR EDITOR --- */}
+                    <div className="w-full md:w-[450px] bg-white border-r flex flex-col shadow-2xl z-20">
+                        <div className="p-6 border-b sticky top-0 bg-white z-30 text-slate-800">
+                            <div className="flex items-center justify-between mb-6">
+                                <div className="flex items-center gap-2">
+                                    <Icon name="settings" className="text-orange-600" />
+                                    <div>
+                                        <h1 className="font-black text-lg tracking-tighter uppercase leading-none">CMS EDITOR</h1>
+                                        <div className="flex items-center gap-1 mt-1">
+                                            {isSaving ? (
+                                                <div className="flex items-center gap-1"><Icon name="refresh-cw" size={10} className="animate-spin text-orange-400" /><span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Saving...</span></div>
+                                            ) : (
+                                                <div className="flex items-center gap-1"><Icon name="save" size={10} className="text-green-500" /><span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Live Session</span></div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button onClick={() => setShowClearConfirm(true)} className="p-2.5 rounded-full bg-slate-100 text-slate-400 hover:text-red-500 transition-all"><Icon name="eraser" size={18} /></button>
+                                    <button onClick={handleCopyCode} className={`px-5 py-2.5 rounded-full text-[10px] font-black tracking-widest transition-all ${copied ? 'bg-green-500 text-white' : 'bg-slate-900 text-white hover:bg-orange-600'}`}>{copied ? 'COPIED!' : 'GET CODE'}</button>
+                                </div>
+                            </div>
+                            <div className="flex gap-1 bg-slate-50 p-1 rounded-xl">
+                                {[{id:'general',l:'Logistics'},{id:'itin',l:'Itinerary'},{id:'faq',l:'FAQ'},{id:'library',l:'Library'}].map(t => (
+                                    <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex-1 py-2.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all tab-transition ${activeTab === t.id ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>{t.l}</button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-6 scrollbar-thin text-slate-800">
+                            {activeTab === 'library' && (
+                                <div className="animate-fade-in space-y-6">
+                                    <div className="bg-orange-50 p-4 rounded-xl border border-orange-100">
+                                        <h3 className="text-[10px] font-black uppercase text-orange-700 mb-3 tracking-widest">Save Current Work</h3>
+                                        <div className="flex gap-2">
+                                            <input 
+                                                className="flex-1 p-2.5 rounded-lg border border-orange-200 text-sm focus:ring-2 focus:ring-orange-400 outline-none" 
+                                                placeholder="Version Name (e.g. Draft V1)" 
+                                                value={newProjectName} 
+                                                onChange={e => setNewProjectName(e.target.value)}
+                                            />
+                                            <button onClick={handleSaveToLibrary} className="bg-orange-600 text-white px-4 rounded-lg font-black text-[10px] uppercase">Save</button>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-3">
+                                        <h3 className="text-xs font-black uppercase border-l-4 border-slate-300 pl-3">Saved Versions</h3>
+                                        {library.length === 0 && <p className="text-xs text-slate-400 italic">No saved versions yet.</p>}
+                                        {library.map(p => (
+                                            <div key={p.id} className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm hover:border-orange-200 transition-all flex justify-between items-center group">
+                                                <div onClick={() => loadProject(p)} className="cursor-pointer flex-1">
+                                                    <p className="font-black text-sm text-slate-800">{p.name}</p>
+                                                    <p className="text-[10px] text-slate-400 uppercase font-bold">{p.date}</p>
+                                                </div>
+                                                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
+                                                    <button onClick={() => loadProject(p)} className="p-2 bg-slate-100 text-slate-600 rounded-lg hover:bg-orange-600 hover:text-white"><Icon name="upload" size={14} /></button>
+                                                    <button onClick={() => deleteProject(p.id)} className="p-2 bg-slate-100 text-slate-600 rounded-lg hover:bg-red-600 hover:text-white"><Icon name="trash-2" size={14} /></button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTab === 'general' && (
+                                <div className="animate-fade-in">
+                                    <Input label="Main Title" value={data.mainTitle} onChange={(v) => updateField('mainTitle', v)} />
+                                    <Input label="Intro Text" isArea value={data.mainDescription} onChange={(v) => updateField('mainDescription', v)} />
+                                    <div className="h-px bg-slate-100 my-8"></div>
+                                    <div className="flex items-center justify-between mb-4"><h3 className="text-xs font-black uppercase border-l-4 border-orange-500 pl-3 tracking-wider">Flight Blocks</h3><button onClick={() => addItem('logistics', { id: Date.now().toString(), date: "NEW DATE", depTime: "00:00", depAir: "", arrTime: "00:00", arrAir: "", notes: "", imgUrl: "https://placehold.co/180x180/EEE/666?text=TRAVEL", googleCal: "#", outlookCal: "#", appleCal: "#" })} className="text-[10px] bg-slate-900 text-white px-3 py-1.5 rounded-lg font-black hover:bg-orange-600 transition-colors">+ ADD</button></div>
+                                    {data.logistics.map((log, idx) => (
+                                        <div key={log.id} className="bg-slate-50 border border-slate-200 p-4 rounded-xl mb-6 relative group border-2 border-transparent hover:border-orange-100 transition-all">
+                                            <button onClick={() => updateField('logistics', data.logistics.filter((_, i) => i !== idx))} className="absolute top-2 right-2 text-slate-300 hover:text-red-500 transition-colors"><Icon name="trash-2" size={14} /></button>
+                                            <Input label="Travel Date" value={log.date} onChange={(v) => updateField(`logistics.${idx}.date`, v)} />
+                                            <div className="grid grid-cols-2 gap-3 mb-4">
+                                                <div className="bg-white p-2 rounded border shadow-sm"><div className="text-[8px] font-black text-orange-600 mb-1 uppercase">Departure</div><input className="w-full text-xs font-bold focus:outline-none" value={log.depTime} onChange={e => updateField(`logistics.${idx}.depTime`, e.target.value)} /><input className="w-full text-[10px] text-slate-400 focus:outline-none" value={log.depAir} onChange={e => updateField(`logistics.${idx}.depAir`, e.target.value)} placeholder="Code" /></div>
+                                                <div className="bg-white p-2 rounded border shadow-sm"><div className="text-[8px] font-black text-orange-600 mb-1 uppercase">Arrival</div><input className="w-full text-xs font-bold focus:outline-none" value={log.arrTime} onChange={e => updateField(`logistics.${idx}.arrTime`, e.target.value)} /><input className="w-full text-[10px] text-slate-400 focus:outline-none" value={log.arrAir} onChange={e => updateField(`logistics.${idx}.arrAir`, e.target.value)} placeholder="Code" /></div>
+                                            </div>
+                                            <Input label="Flight Summary" isArea value={log.notes} onChange={(v) => updateField(`logistics.${idx}.notes`, v)} />
+                                            <Input label="Airport Image URL" value={log.imgUrl} onChange={(v) => updateField(`logistics.${idx}.imgUrl`, v)} />
+                                        </div>
+                                    ))}
+                                    <Input label="JotForm ID" value={data.jotformId} onChange={(v) => updateField('jotformId', v)} />
+                                </div>
+                            )}
+
+                            {activeTab === 'itin' && (
+                                <div className="animate-fade-in">
+                                    <div className="flex items-center justify-between mb-6"><h3 className="text-xs font-black uppercase border-l-4 border-orange-500 pl-3 tracking-wider">Itinerary Schedule</h3><button onClick={() => addItem('itinerary', { title: "NEW DAY", items: [] })} className="text-[10px] bg-slate-900 text-white px-3 py-1.5 rounded-lg font-black hover:bg-orange-600 transition-colors">+ ADD DAY</button></div>
+                                    {data.itinerary.map((day, dIdx) => (
+                                        <div key={day.id} className="mb-8 border rounded-2xl overflow-hidden bg-white shadow-sm border-slate-200">
+                                            <div className="bg-slate-50 p-4 flex items-center justify-between border-b"><input className="bg-transparent font-black text-xs w-full focus:outline-none uppercase tracking-widest text-slate-700" value={day.title} onChange={e => updateField(`itinerary.${dIdx}.title`, e.target.value)} /><button onClick={() => updateField('itinerary', data.itinerary.filter((_, i) => i !== dIdx))} className="text-slate-300 hover:text-red-500"><Icon name="x" size={14} /></button></div>
+                                            <div className="p-4 space-y-4">
+                                                {day.items.map((item, eIdx) => (
+                                                    <div key={eIdx} className="flex gap-3 group border-b border-slate-50 pb-3 last:border-0 relative">
+                                                        <div className="w-16"><input className="w-full bg-slate-50 text-[10px] font-black p-1.5 rounded border border-transparent focus:border-orange-200 outline-none text-orange-600" value={item.time} onChange={e => { const n = [...data.itinerary]; n[dIdx].items[eIdx].time = e.target.value; setData({...data, itinerary: n}); }} /></div>
+                                                        <div className="flex-1 space-y-1 pr-6"><input className="w-full text-xs font-black focus:outline-none text-slate-800" value={item.title} onChange={e => { const n = [...data.itinerary]; n[dIdx].items[eIdx].title = e.target.value; setData({...data, itinerary: n}); }} /><input className="w-full text-[10px] text-slate-500 focus:outline-none italic" value={item.desc} onChange={e => { const n = [...data.itinerary]; n[dIdx].items[eIdx].desc = e.target.value; setData({...data, itinerary: n}); }} /></div>
+                                                        <button onClick={() => { const n = [...data.itinerary]; n[dIdx].items.splice(eIdx, 1); setData({...data, itinerary: n}); }} className="opacity-0 group-hover:opacity-100 text-slate-300 absolute right-0 top-1"><Icon name="trash-2" size={12} /></button>
+                                                    </div>
+                                                ))}
+                                                <button onClick={() => { const n = [...data.itinerary]; n[dIdx].items.push({time: "09:00", title: "New Activity", desc: ""}); setData({...data, itinerary: n}); }} className="w-full py-2 border-2 border-dashed border-slate-100 text-[10px] font-black text-slate-400 rounded-lg hover:border-orange-200 hover:text-orange-500">+ ADD EVENT</button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {activeTab === 'faq' && (
+                                <div className="animate-fade-in">
+                                    <div className="flex items-center justify-between mb-6"><h3 className="text-xs font-black uppercase border-l-4 border-orange-500 pl-3 tracking-wider">Help Sections</h3><button onClick={() => addItem('faqs', { category: "NEW CATEGORY", questions: [] })} className="text-[10px] bg-slate-900 text-white px-3 py-1.5 rounded-lg font-black hover:bg-orange-600">+ SECTION</button></div>
+                                    {data.faqs.map((cat, cIdx) => (
+                                        <div key={cat.id || cIdx} className="mb-10 p-5 border border-slate-200 rounded-2xl bg-white shadow-sm">
+                                            <div className="flex items-center gap-2 mb-6"><input className="flex-1 bg-orange-50 p-2 text-[10px] font-black uppercase tracking-[2px] text-orange-600 rounded-lg focus:outline-none" value={cat.category} onChange={e => updateField(`faqs.${cIdx}.category`, e.target.value)} /><button onClick={() => updateField('faqs', data.faqs.filter((_, i) => i !== cIdx))} className="text-slate-300 hover:text-red-500"><Icon name="trash-2" size={16} /></button></div>
+                                            <div className="space-y-6 text-slate-800">
+                                                {cat.questions.map((q, qIdx) => (
+                                                    <div key={qIdx} className="border-b border-slate-50 pb-6 last:border-0 group relative"><input className="w-full text-xs font-bold mb-2 focus:outline-none text-slate-900 pr-12" value={q.q} onChange={e => { const n = [...data.faqs]; n[cIdx].questions[qIdx].q = e.target.value; setData({...data, faqs: n}); }} /><textarea className="w-full text-[11px] text-slate-500 focus:outline-none min-h-[60px] leading-relaxed resize-none" value={q.a} onChange={e => { const n = [...data.faqs]; n[cIdx].questions[qIdx].a = e.target.value; setData({...data, faqs: n}); }} /><button onClick={() => { const n = [...data.faqs]; n[cIdx].questions.splice(qIdx, 1); setData({...data, faqs: n}); }} className="opacity-0 group-hover:opacity-100 absolute top-0 right-0 text-[10px] text-red-300 font-bold">Delete</button></div>
+                                                ))}
+                                                <button onClick={() => { const n = [...data.faqs]; n[cIdx].questions.push({q: "Question?", a: ""}); setData({...data, faqs: n}); }} className="text-[10px] font-black text-slate-400 hover:text-orange-600 uppercase">+ ADD QUESTION</button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* --- PREVIEW AREA --- */}
+                    <div className="flex-1 bg-slate-200 p-4 md:p-10 overflow-hidden flex flex-col relative z-10">
+                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-5 py-2 rounded-full text-[9px] font-black tracking-[4px] uppercase shadow-2xl z-30 flex items-center gap-2 border border-slate-700 pointer-events-none"><span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span> LIVE PREVIEW</div>
+                        <div className="bg-white flex-1 shadow-2xl rounded-sm overflow-hidden flex flex-col border border-slate-300">
+                            <iframe title="Preview" srcDoc={generateHTML()} className="flex-1 border-none" />
+                        </div>
+                    </div>
+
+                    {/* --- CUSTOM CLEAR MODAL --- */}
+                    {showClearConfirm && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl border border-slate-100 animate-fade-in text-center">
+                                <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-6"><Icon name="alert-triangle" size={32} /></div>
+                                <h2 className="text-xl font-black text-slate-900 mb-2 uppercase tracking-tighter">Wipe Current?</h2>
+                                <p className="text-slate-500 text-sm mb-8 leading-relaxed">This clears your active session only. Items in your Library will remain safe.</p>
+                                <div className="flex gap-3"><button onClick={() => setShowClearConfirm(false)} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 font-black text-[10px] uppercase rounded-xl">Cancel</button><button onClick={executeClearAll} className="flex-1 py-3 px-4 bg-red-600 text-white font-black text-[10px] uppercase rounded-xl shadow-lg shadow-red-200">Wipe</button></div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
